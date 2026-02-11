@@ -173,17 +173,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y playit
           
-          echo "Starting Playit.gg tunnel in the background..."
-          nohup playit &
-          sleep 8 # Give it a moment to initialize and print the address
+          echo "Starting Playit.gg..."
+          # We run it in the background but capture the logs
+          playit > playit_logs.txt 2>&1 &
+          
+          # Wait for it to generate the claim link or start the tunnel
+          sleep 15 
+          
+          echo "--- PLAYIT LOGS (LOOK FOR CLAIM LINK OR IP HERE) ---"
+          cat playit_logs.txt
+          echo "----------------------------------------------------"
 
       # --- Run Server ---
       - name: Start Minecraft Server
         working-directory: ./data
         run: |
           echo "-----------------------------------------------------"
-          echo " STARTING SERVER - IT WILL RUN FOR A MAX OF 6 HOURS "
-          echo " CHECK THE LOGS ABOVE FOR YOUR SERVER ADDRESS FROM PLAYIT.GG "
+          echo " SERVER STARTING..."
+          echo " If this is your first time, scroll UP to the "
+          echo " 'Setup Playit.gg Tunnel' step to find the CLAIM LINK."
           echo "-----------------------------------------------------"
           
           if [ "${{ inputs.mod_loader }}" = "forge" ]; then
@@ -193,7 +201,6 @@ jobs:
             java -Xms4G -Xmx6G -jar server.jar nogui
           fi
 
-      # --- Backup Logic (FIXED) ---
       - name: Backup World to Release
         if: always()
         env:
