@@ -5,57 +5,30 @@ on:
     inputs:
       mc_version:
         description: 'Minecraft Version'
-        required: true
         default: '1.20.1'
       mod_loader:
         description: 'Loader (vanilla, paper, fabric, forge)'
-        required: true
         default: 'paper'
-        type: choice
-        options:
-          - vanilla
-          - paper
-          - fabric
-          - forge
       java_type:
-        description: 'Java (stock or graalvm)'
-        required: true
+        description: 'Java (distribution: graalvm or oracle or temurin)'
         default: 'graalvm'
-        type: choice
-        options:
-          - stock
-          - graalvm
       java_version:
         description: 'Java Version'
-        required: true
         default: '21'
       online_mode:
-        description: 'Online Mode (false = cracked)'
-        required: true
+        description: 'Online Mode'
         default: 'false'
-        type: boolean
       server_port:
         description: 'Port'
-        required: true
         default: '25565'
-        type: number
       motd:
         description: 'MOTD'
-        required: true
         default: 'GitHub Hosted Server'
       difficulty:
         description: 'Difficulty'
-        required: true
         default: 'easy'
-        type: choice
-        options:
-          - peaceful
-          - easy
-          - normal
-          - hard
       seed:
         description: 'Seed'
-        required: false
         default: ''
 
 jobs:
@@ -64,115 +37,73 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup GitHub CLI
-        run: |
-          sudo apt update
-          sudo apt install -y curl
-          type -p curl >/dev/null || sudo apt install curl -y
-          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
-          sudo apt update
-          sudo apt install -y gh
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ github.event.inputs.java_version }}
+          distribution: ${{ github.event.inputs.java_type == 'graalvm' && 'graalvm-community' || 'temurin' }}
 
-      - name: Install Java
+      - name: Data Setup & Restore Backup
         env:
-          JAVA_TYPE: ${{ github.event.inputs.java_type }}
-          JAVA_VERSION: ${{ github.event.inputs.java_version }}
-        run: |
-          if [ "$JAVA_TYPE" = "graalvm" ]; then
-            curl -s "https://get.sdkman.io" | bash
-            source "$HOME/.sdkman/bin/sdkman-init.sh"
-            sdk install java $JAVA_VERSION-graalce
-            sdk use java $JAVA_VERSION-graalce
-            JAVA_HOME="$HOME/.sdkman/candidates/java/current"
-            echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
-            echo "$JAVA_HOME/bin" >> $GITHUB_PATH
-          else
-            sudo apt update && sudo apt install -y openjdk-$JAVA_VERSION-jre-headless
-            JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))
-            echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
-          fi
-
-      - name: Setup data directory
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p data
           cd data
-          if gh release view backup >/dev/null 2>&1; then
-            gh release download backup -p "world.zip" --clobber || echo "No world backup found"
+          # Try to get world from previous release
+          if gh release view backup &>/dev/null; then
+            echo "Backup found, downloading..."
+            gh release download backup -p "world.zip" --clobber || echo "No world.zip in backup release."
             if [ -f "world.zip" ]; then
               unzip -o world.zip
               rm -f world.zip
             fi
           else
-            echo "No backup release exists"
+            echo "No backup release found."
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download server JAR
+      - name: Download Server
         working-directory: ./data
-        env:
-          MC_VERSION: ${{ github.event.inputs.mc_version }}
-          MOD_LOADER: ${{ github.event.inputs.mod_loader }}
         run: |
-          case "$MOD_LOADER" in
+          MC="${{ github.event.inputs.mc_version }}"
+          case "${{ github.event.inputs.mod_loader }}" in
             paper)
-              echo "Downloading Paper for $MC_VERSION"
-              BUILD=$(curl -s "https://api.papermc.io/v2/projects/paper/versions/$MC_VERSION/builds" | jq -r '.builds[-1].build')
-              curl -L -o server.jar "https://api.papermc.io/v2/projects/paper/versions/$MC_VERSION/builds/$BUILD/downloads/paper-$MC_VERSION-$BUILD.jar"
+              BUILD=$(curl -s "https://api.papermc.io/v2/projects/paper/versions/$MC/builds" | jq -r '.builds[-1].build')
+              curl -L -o server.jar "https://api.papermc.io/v2/projects/paper/versions/$MC/builds/$BUILD/downloads/paper-$MC-$BUILD.jar"
               ;;
             fabric)
-              echo "Downloading Fabric for $MC_VERSION"
-              LOADER_VERSION=$(curl -s "https://meta.fabricmc.net/v2/versions/loader" | jq -r '.[0].version')
-              curl -L -o server.jar "https://meta.fabricmc.net/v2/versions/loader/$MC_VERSION/0.15.11/0.12.4/server/jar"
+              # Fetches latest stable loader and installer
+              LOADER=$(curl -s https://meta.fabricmc.net/v2/versions/loader | jq -r '.[0].version')
+              INSTALLER=$(curl -s https://meta.fabricmc.net/v2/versions/installer | jq -r '.[0].version')
+              curl -L -o server.jar "https://meta.fabricmc.net/v2/versions/loader/$MC/$LOADER/$INSTALLER/server/jar"
               ;;
             forge)
-              echo "Downloading Forge for $MC_VERSION"
-              FORGE_VERSION=$(curl -s "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json" | jq -r ".promos[\"$MC_VERSION-latest\"]")
-              curl -L -o installer.jar "https://maven.minecraftforge.net/net/minecraftforge/forge/$MC_VERSION-$FORGE_VERSION/forge-$MC_VERSION-$FORGE_VERSION-installer.jar"
+              # Forge structure is complex; this downloads the installer and runs it
+              FORGE_VER=$(curl -s "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json" | jq -r ".promos[\"$MC-latest\"] // .promos[\"$MC-recommended\"]")
+              curl -L -o installer.jar "https://maven.minecraftforge.net/net/minecraftforge/forge/$MC-$FORGE_VER/forge-$MC-$FORGE_VER-installer.jar"
               java -jar installer.jar --installServer
-              # Forge creates a version-specific jar
-              if [ -f "forge-$MC_VERSION-$FORGE_VERSION-universal.jar" ]; then
-                mv "forge-$MC_VERSION-$FORGE_VERSION-universal.jar" server.jar
-              elif [ -f "forge-$MC_VERSION-$FORGE_VERSION.jar" ]; then
-                mv "forge-$MC_VERSION-$FORGE_VERSION.jar" server.jar
-              fi
-              rm -f installer.jar
+              rm installer.jar
+              # Forge 1.17+ uses user_jvm_args.txt and run.sh
               ;;
-            vanilla)
-              echo "Downloading Vanilla for $MC_VERSION"
-              VERSION_MANIFEST=$(curl -s "https://launchermeta.mojang.com/mc/game/version_manifest.json")
-              VERSION_URL=$(echo "$VERSION_MANIFEST" | jq -r --arg V "$MC_VERSION" '.versions[] | select(.id == $V) | .url')
+            *)
+              VERSION_URL=$(curl -s "https://launchermeta.mojang.com/mc/game/version_manifest.json" | jq -r --arg V "$MC" '.versions[] | select(.id == $V) | .url')
               DOWNLOAD_URL=$(curl -s "$VERSION_URL" | jq -r '.downloads.server.url')
               curl -L -o server.jar "$DOWNLOAD_URL"
               ;;
           esac
-          
-          if [ ! -f "server.jar" ]; then
-            echo "ERROR: Failed to download server JAR!"
-            exit 1
-          fi
 
-      - name: Configure server
+      - name: Configure Server
         working-directory: ./data
-        env:
-          ONLINE_MODE: ${{ github.event.inputs.online_mode }}
-          MOTD: ${{ github.event.inputs.motd }}
-          DIFFICULTY: ${{ github.event.inputs.difficulty }}
-          SEED: ${{ github.event.inputs.seed }}
-          SERVER_PORT: ${{ github.event.inputs.server_port }}
         run: |
           echo "eula=true" > eula.txt
-          cat > server.properties <<EOF
-online-mode=$ONLINE_MODE
-motd=$MOTD
-difficulty=$DIFFICULTY
-level-seed=$SEED
-server-port=$SERVER_PORT
+          cat > server.properties << EOF
+online-mode=${{ github.event.inputs.online_mode }}
+motd=${{ github.event.inputs.motd }}
+difficulty=${{ github.event.inputs.difficulty }}
+level-seed=${{ github.event.inputs.seed }}
+server-port=${{ github.event.inputs.server_port }}
 enable-rcon=false
 enable-command-block=true
 max-players=20
@@ -180,86 +111,64 @@ view-distance=10
 allow-flight=true
 EOF
 
-      - name: Setup networking with playit.gg
+      - name: Setup Networking (Playit.gg)
+        env:
+          PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
         run: |
-          # Install playit.gg
-          curl -SsL https://playit-cloud.github.io/ppa/key.gpg | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/playit.gpg
-          echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/ubuntu ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list
-          sudo apt update
-          sudo apt install -y playit
-          
-          # Start playit in background
-          nohup playit --secret "${{ secrets.PLAYIT_SECRET }}" > playit.log 2>&1 &
-          echo $! > playit.pid
-          
-          # Wait for connection
-          sleep 15
-          
-          # Display connection URL
-          if [ -f "playit.log" ]; then
-            echo "=== Playit.gg Log ==="
-            tail -20 playit.log
-            echo "====================="
+          if [ -z "$PLAYIT_SECRET" ]; then
+            echo "PLAYIT_SECRET is missing! Server will run but won't be accessible externally."
+          else
+            curl -SsL https://playit-cloud.github.io/ppa/key.gpg | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/playit.gpg
+            echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/ubuntu ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list
+            sudo apt update && sudo apt install -y playit
+            nohup playit --secret "$PLAYIT_SECRET" > playit.log 2>&1 &
+            echo $! > /tmp/playit.pid
+            sleep 10
+            grep -oE "[a-z0-9]+\.[a-z]+\.(playit\.gg|joinmc\.link)" playit.log | head -1 || echo "Tunnel active. Check playit.gg dashboard."
           fi
 
-      - name: Run Minecraft server
+      - name: Run Server
         working-directory: ./data
         timeout-minutes: 360
         run: |
-          # Create startup script for Forge
-          if [ "${{ github.event.inputs.mod_loader }}" = "forge" ] && [ ! -f "run.sh" ]; then
-            cat > run.sh <<'EOF'
-#!/bin/bash
-java -Xmx6G -Xms6G -jar server.jar nogui
-EOF
-            chmod +x run.sh
-          fi
-          
-          # Start server
+          # Detect how to run based on files present
           if [ -f "run.sh" ]; then
+            chmod +x run.sh
             ./run.sh nogui
-          else
+          elif [ -f "server.jar" ]; then
             java -Xmx6G -Xms6G -jar server.jar nogui
+          else
+            echo "No executable server file found!"
+            exit 1
           fi
 
-      - name: Backup and cleanup
+      - name: Backup and Cleanup
         if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Stop playit
-          if [ -f "playit.pid" ]; then
-            kill $(cat playit.pid) 2>/dev/null || true
-            rm -f playit.pid
+          if [ -f "/tmp/playit.pid" ]; then
+            kill $(cat /tmp/playit.pid) 2>/dev/null || true
           fi
           
-          # Create backup if world exists
+          # Create backup
           if [ -d "data/world" ]; then
-            echo "Creating world backup..."
             cd data
-            zip -r ../world-backup.zip world world_nether world_the_end 2>/dev/null || zip -r ../world-backup.zip world 2>/dev/null
+            zip -r ../world-backup.zip world world_nether world_the_end 2>/dev/null || zip -r ../world-backup.zip world
             cd ..
-            
-            if [ -f "world-backup.zip" ]; then
-              if gh release view backup >/dev/null 2>&1; then
-                gh release upload backup world-backup.zip --clobber
-              else
-                gh release create backup world-backup.zip --title "World Backup" --notes "Automated backup"
-              fi
+          fi
+          
+          if [ -f "world-backup.zip" ]; then
+            if gh release view backup &>/dev/null; then
+              gh release upload backup world-backup.zip --clobber
+            else
+              gh release create backup world-backup.zip --title "World Backup" --notes "Automated backup"
             fi
           fi
           
-          # Clean up large files
-          rm -rf data/world* data/*.jar data/libraries data/logs/*.gz world-backup.zip
-          
-          # Commit config changes
+          # Push config changes (server.properties, etc)
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          if git diff --quiet -- data/; then
-            echo "No configuration changes to commit"
-          else
-            git add data/
-            git commit -m "Update server configuration"
-            git push
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git add data/*.properties 2>/dev/null || true
+          git commit -m "Update server configuration" && git push || echo "No changes to commit"
