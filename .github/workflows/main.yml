@@ -1,34 +1,43 @@
-name: MC-Server-Runner
+name: "MC-Server-Runner"
 
 on:
   workflow_dispatch:
     inputs:
       mc_version:
         description: 'Minecraft Version'
+        type: string
         default: '1.20.1'
       mod_loader:
         description: 'Loader (vanilla, paper, fabric, forge)'
+        type: string
         default: 'paper'
       java_type:
         description: 'Java (graalvm or temurin)'
+        type: string
         default: 'graalvm'
       java_version:
         description: 'Java Version'
+        type: string
         default: '21'
       online_mode:
         description: 'Online Mode'
+        type: string
         default: 'false'
       server_port:
         description: 'Port'
+        type: string
         default: '25565'
       motd:
         description: 'MOTD'
+        type: string
         default: 'GitHub Hosted Server'
       difficulty:
         description: 'Difficulty'
+        type: string
         default: 'easy'
       seed:
         description: 'Seed'
+        type: string
         default: ''
 
 jobs:
@@ -91,7 +100,6 @@ jobs:
         working-directory: ./data
         run: |
           echo "eula=true" > eula.txt
-          # The lines below MUST be indented to stay inside the 'run' block
           cat > server.properties << EOF
           online-mode=${{ github.event.inputs.online_mode }}
           motd=${{ github.event.inputs.motd }}
@@ -140,13 +148,13 @@ jobs:
           if [ -f "/tmp/playit.pid" ]; then
             kill $(cat /tmp/playit.pid) 2>/dev/null || true
           fi
-          
+
           if [ -d "data/world" ]; then
             cd data
             zip -r ../world-backup.zip world world_nether world_the_end 2>/dev/null || zip -r ../world-backup.zip world
             cd ..
           fi
-          
+
           if [ -f "world-backup.zip" ]; then
             if gh release view backup &>/dev/null; then
               gh release upload backup world-backup.zip --clobber
@@ -154,7 +162,7 @@ jobs:
               gh release create backup world-backup.zip --title "World Backup" --notes "Automated backup"
             fi
           fi
-          
+
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add data/*.properties 2>/dev/null || true
