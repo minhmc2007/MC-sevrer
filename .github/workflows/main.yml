@@ -125,7 +125,6 @@ jobs:
           server-port=25565
           EOF
 
-      # --- Networking (FIXED LOGS) ---
       - name: Setup Playit.gg Tunnel
         env:
           PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
@@ -136,17 +135,19 @@ jobs:
           
           echo "Starting Playit..."
           if [ -z "$PLAYIT_SECRET" ]; then
-            # No secret? Run and force show the claim link
             playit > playit.log 2>&1 &
-            sleep 10
-            echo "--- !!! ACTION REQUIRED !!! ---"
+            sleep 15
+            echo "--- !!! ACTION REQUIRED: CLAIM YOUR IP !!! ---"
             grep -o "https://playit.gg/claim/[^ ]*" playit.log || cat playit.log
-            echo "--- CLICK THE LINK ABOVE TO GET YOUR IP ---"
           else
+            # Start with secret
             playit --secret "$PLAYIT_SECRET" > playit.log 2>&1 &
-            sleep 10
-            echo "Tunnel started with Secret Key."
+            sleep 15
+            echo "--- YOUR SERVER IP ADDRESS ---"
+            # This line finds the actual .playit.gg address in the logs
+            grep -oE "[a-zA-Z0-9.-]+\.playit\.gg" playit.log | head -n 1 || echo "IP not found in logs yet, check Playit.gg Dashboard"
           fi
+          echo "------------------------------------------"
 
       # --- Run Server ---
       - name: Start Minecraft Server
