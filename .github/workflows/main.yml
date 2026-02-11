@@ -10,7 +10,7 @@ on:
         description: 'Loader (vanilla, paper, fabric, forge)'
         default: 'paper'
       java_type:
-        description: 'Java (distribution: graalvm or oracle or temurin)'
+        description: 'Java (graalvm or temurin)'
         default: 'graalvm'
       java_version:
         description: 'Java Version'
@@ -40,28 +40,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Install Java
         uses: actions/setup-java@v4
         with:
           java-version: ${{ github.event.inputs.java_version }}
           distribution: ${{ github.event.inputs.java_type == 'graalvm' && 'graalvm-community' || 'temurin' }}
 
-      - name: Data Setup & Restore Backup
+      - name: Data Setup
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p data
           cd data
-          # Try to get world from previous release
           if gh release view backup &>/dev/null; then
-            echo "Backup found, downloading..."
-            gh release download backup -p "world.zip" --clobber || echo "No world.zip in backup release."
+            gh release download backup -p "world.zip" --clobber || echo "No world backup found."
             if [ -f "world.zip" ]; then
               unzip -o world.zip
               rm -f world.zip
             fi
-          else
-            echo "No backup release found."
           fi
 
       - name: Download Server
@@ -74,18 +70,15 @@ jobs:
               curl -L -o server.jar "https://api.papermc.io/v2/projects/paper/versions/$MC/builds/$BUILD/downloads/paper-$MC-$BUILD.jar"
               ;;
             fabric)
-              # Fetches latest stable loader and installer
               LOADER=$(curl -s https://meta.fabricmc.net/v2/versions/loader | jq -r '.[0].version')
               INSTALLER=$(curl -s https://meta.fabricmc.net/v2/versions/installer | jq -r '.[0].version')
               curl -L -o server.jar "https://meta.fabricmc.net/v2/versions/loader/$MC/$LOADER/$INSTALLER/server/jar"
               ;;
             forge)
-              # Forge structure is complex; this downloads the installer and runs it
-              FORGE_VER=$(curl -s "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json" | jq -r ".promos[\"$MC-latest\"] // .promos[\"$MC-recommended\"]")
-              curl -L -o installer.jar "https://maven.minecraftforge.net/net/minecraftforge/forge/$MC-$FORGE_VER/forge-$MC-$FORGE_VER-installer.jar"
+              FORGE_VERSION=$(curl -s "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json" | jq -r ".promos[\"$MC-latest\"]")
+              curl -L -o installer.jar "https://maven.minecraftforge.net/net/minecraftforge/forge/$MC-$FORGE_VERSION/forge-$MC-$FORGE_VERSION-installer.jar"
               java -jar installer.jar --installServer
-              rm installer.jar
-              # Forge 1.17+ uses user_jvm_args.txt and run.sh
+              rm -f installer.jar
               ;;
             *)
               VERSION_URL=$(curl -s "https://launchermeta.mojang.com/mc/game/version_manifest.json" | jq -r --arg V "$MC" '.versions[] | select(.id == $V) | .url')
@@ -98,25 +91,26 @@ jobs:
         working-directory: ./data
         run: |
           echo "eula=true" > eula.txt
+          # The lines below MUST be indented to stay inside the 'run' block
           cat > server.properties << EOF
-online-mode=${{ github.event.inputs.online_mode }}
-motd=${{ github.event.inputs.motd }}
-difficulty=${{ github.event.inputs.difficulty }}
-level-seed=${{ github.event.inputs.seed }}
-server-port=${{ github.event.inputs.server_port }}
-enable-rcon=false
-enable-command-block=true
-max-players=20
-view-distance=10
-allow-flight=true
-EOF
+          online-mode=${{ github.event.inputs.online_mode }}
+          motd=${{ github.event.inputs.motd }}
+          difficulty=${{ github.event.inputs.difficulty }}
+          level-seed=${{ github.event.inputs.seed }}
+          server-port=${{ github.event.inputs.server_port }}
+          enable-rcon=false
+          enable-command-block=true
+          max-players=20
+          view-distance=10
+          allow-flight=true
+          EOF
 
-      - name: Setup Networking (Playit.gg)
+      - name: Setup Networking
         env:
           PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
         run: |
           if [ -z "$PLAYIT_SECRET" ]; then
-            echo "PLAYIT_SECRET is missing! Server will run but won't be accessible externally."
+            echo "Error: PLAYIT_SECRET is not set in Secrets."
           else
             curl -SsL https://playit-cloud.github.io/ppa/key.gpg | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/playit.gpg
             echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/ubuntu ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list
@@ -124,22 +118,18 @@ EOF
             nohup playit --secret "$PLAYIT_SECRET" > playit.log 2>&1 &
             echo $! > /tmp/playit.pid
             sleep 10
-            grep -oE "[a-z0-9]+\.[a-z]+\.(playit\.gg|joinmc\.link)" playit.log | head -1 || echo "Tunnel active. Check playit.gg dashboard."
+            grep -oE "[a-z0-9]+\.[a-z]+\.(playit\.gg|joinmc\.link)" playit.log | head -1 || echo "Check playit.gg dashboard"
           fi
 
       - name: Run Server
         working-directory: ./data
         timeout-minutes: 360
         run: |
-          # Detect how to run based on files present
           if [ -f "run.sh" ]; then
             chmod +x run.sh
             ./run.sh nogui
-          elif [ -f "server.jar" ]; then
-            java -Xmx6G -Xms6G -jar server.jar nogui
           else
-            echo "No executable server file found!"
-            exit 1
+            java -Xmx6G -Xms6G -jar server.jar nogui
           fi
 
       - name: Backup and Cleanup
@@ -147,12 +137,10 @@ EOF
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Stop playit
           if [ -f "/tmp/playit.pid" ]; then
             kill $(cat /tmp/playit.pid) 2>/dev/null || true
           fi
           
-          # Create backup
           if [ -d "data/world" ]; then
             cd data
             zip -r ../world-backup.zip world world_nether world_the_end 2>/dev/null || zip -r ../world-backup.zip world
@@ -167,7 +155,6 @@ EOF
             fi
           fi
           
-          # Push config changes (server.properties, etc)
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add data/*.properties 2>/dev/null || true
