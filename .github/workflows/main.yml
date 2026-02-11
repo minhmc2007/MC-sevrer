@@ -1,4 +1,4 @@
-name: Minecraft Server (Aternos Alternative)
+name: MC-Server-Runner
 
 on:
   workflow_dispatch:
@@ -6,170 +6,243 @@ on:
       mc_version:
         description: 'Minecraft Version'
         default: '1.20.1'
-        required: true
       mod_loader:
-        description: 'Mod Loader'
-        type: choice
-        options:
-        - vanilla
-        - paper
-        - fabric
-        - forge
-        default: forge
-      java_distro:
-        description: 'Java Distribution'
-        type: choice
-        options:
-        - stock
-        - graalvm
-        default: stock
+        description: 'Loader (vanilla, paper, fabric, forge)'
+        default: 'paper'
+      java_type:
+        description: 'Java (stock or graalvm)'
+        default: 'graalvm'
       java_version:
-        description: 'Java Version (17 for 1.20.1, 21 for 1.20.5+)'
-        default: '17'
-        required: true
-      # Server Properties
+        description: 'Java Version (e.g., 21-graalce)'
+        default: '21'
+      online_mode:
+        description: 'Online Mode (false = cracked)'
+        default: 'false'
+      server_port:
+        description: 'Port'
+        default: '25565'
       motd:
-        description: 'Server MOTD'
-        default: 'A GitHub Actions Server'
+        description: 'MOTD'
+        default: 'GitHub Hosted Server'
       difficulty:
         description: 'Difficulty'
-        type: choice
-        options: [peaceful, easy, normal, hard]
-        default: normal
-      hardcore:
-        description: 'Hardcore Mode'
-        type: boolean
-        default: false
-      online_mode:
-        description: 'Online Mode (False = Cracked/Offline)'
-        type: boolean
-        default: true
+        default: 'easy'
       seed:
-        description: 'Level Seed (Leave empty for random)'
+        description: 'Seed'
         default: ''
-      max_players:
-        description: 'Max Players'
-        default: '20'
 
 jobs:
-  play-minecraft:
+  run-server:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # --- Java Setup ---
-      - name: Setup Stock Java
-        if: ${{ inputs.java_distro == 'stock' }}
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: ${{ inputs.java_version }}
-
-      - name: Setup GraalVM (SDKMAN)
-        if: ${{ inputs.java_distro == 'graalvm' }}
+      - name: Setup GitHub CLI
         run: |
-          curl -s "https://get.sdkman.io" | bash
-          source "$HOME/.sdkman/bin/sdkman-init.sh"
-          sdk install java ${{ inputs.java_version }}-graalce || sdk install java 17-graalce
-          echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
-          echo "$HOME/.sdkman/candidates/java/current/bin" >> $GITHUB_PATH
+          type -p curl >/dev/null || sudo apt install curl -y
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+          sudo apt update
+          sudo apt install gh -y
 
-      # --- Preparation ---
-      - name: Create Data Directory
-        run: mkdir -p data
-
-      - name: Restore World from Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Java
         run: |
-          gh release download backup -p "world.zip" -D data || echo "No backup found."
-          cd data && [ -f world.zip ] && unzip -o world.zip && rm world.zip || echo "Fresh start."
-
-      # --- Download Server Jar ---
-      - name: Download Server Software
-        working-directory: ./data
-        run: |
-          MC_VERSION="${{ inputs.mc_version }}"
-          LOADER="${{ inputs.mod_loader }}"
-          if [ "$LOADER" = "paper" ]; then
-            BUILD=$(curl -s https://api.papermc.io/v2/projects/paper/versions/$MC_VERSION/builds | jq -r '.builds[-1].build')
-            curl -o server.jar "https://api.papermc.io/v2/projects/paper/versions/$MC_VERSION/builds/$BUILD/downloads/paper-$MC_VERSION-$BUILD.jar"
-          elif [ "$LOADER" = "fabric" ]; then
-            curl -OJ "https://meta.fabricmc.net/v2/versions/loader/$MC_VERSION/stable/1.0.0/server/jar"
-            mv fabric-server-mc*.jar server.jar
-          elif [ "$LOADER" = "vanilla" ]; then
-            URL=$(curl -s https://launchermeta.mojang.com/mc/game/version_manifest.json | jq -r --arg V "$MC_VERSION" '.versions[] | select(.id == $V) | .url' | xargs curl -s | jq -r '.downloads.server.url')
-            curl -o server.jar "$URL"
-          elif [ "$LOADER" = "forge" ]; then
-            FORGE_V=$(curl -s "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json" | jq -r ".promos[\"$MC_VERSION-latest\"] // .promos[\"$MC_VERSION-recommended\"]")
-            curl -o forge-installer.jar "https://maven.minecraftforge.net/net/minecraftforge/forge/$MC_VERSION-$FORGE_V/forge-$MC_VERSION-$FORGE_V-installer.jar"
-            java -jar forge-installer.jar --installServer
+          if [ "${{ inputs.java_type }}" = "graalvm" ]; then
+            curl -s "https://get.sdkman.io" | bash
+            source "$HOME/.sdkman/bin/sdkman-init.sh"
+            # For SDKMAN to work properly
+            chmod +x "$HOME/.sdkman/bin/sdkman-init.sh"
+            # Matches your specific request for -graalce distribution
+            sdk install java ${{ inputs.java_version }}-graalce
+            sdk use java ${{ inputs.java_version }}-graalce
+            JAVA_HOME="$HOME/.sdkman/candidates/java/current"
+            echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
+            echo "$JAVA_HOME/bin" >> $GITHUB_PATH
+          else
+            sudo apt update && sudo apt install -y openjdk-${{ inputs.java_version }}-jre-headless
+            JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))
+            echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
           fi
 
-      # --- Configure Server ---
-      - name: Configure Server
+      - name: Data Setup
+        run: |
+          mkdir -p data
+          cd data
+          # Try to get world from previous release
+          if gh release view backup &>/dev/null; then
+            gh release download backup -p "world.zip" --clobber || echo "No world backup found."
+          else
+            echo "No backup release found"
+          fi
+          
+          if [ -f "world.zip" ]; then 
+            echo "Found world backup, extracting..."
+            unzip -o world.zip 
+            rm -f world.zip
+          else
+            echo "No world backup to restore"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Server
+        working-directory: ./data
+        run: |
+          MC="${{ inputs.mc_version }}"
+          case "${{ inputs.mod_loader }}" in
+            paper)
+              BUILD=$(curl -s "https://api.papermc.io/v2/projects/paper/versions/$MC/builds" | jq -r '.builds[-1].build')
+              curl -L -o server.jar "https://api.papermc.io/v2/projects/paper/versions/$MC/builds/$BUILD/downloads/paper-$MC-$BUILD.jar"
+              ;;
+            fabric)
+              LOADER_VERSION=$(curl -s "https://meta.fabricmc.net/v2/versions/loader" | jq -r '.[0].version')
+              INSTALLER_VERSION=$(curl -s "https://meta.fabricmc.net/v2/versions/installer" | jq -r '.[0].version')
+              curl -L -o server.jar "https://meta.fabricmc.net/v2/versions/loader/$MC/$LOADER_VERSION/$INSTALLER_VERSION/server/jar"
+              ;;
+            forge)
+              # Get latest forge version
+              FORGE_VERSION=$(curl -s "https://files.minecraftforge.net/net/minecraftforge/forge/index_$MC.json" | jq -r '.promos["latest"]')
+              if [ "$FORGE_VERSION" = "null" ]; then
+                # Fallback to old API
+                FORGE_VERSION=$(curl -s "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json" | jq -r ".promos[\"$MC-latest\"]")
+              fi
+              curl -L -o installer.jar "https://maven.minecraftforge.net/net/minecraftforge/forge/$MC-$FORGE_VERSION/forge-$MC-$FORGE_VERSION-installer.jar"
+              java -jar installer.jar --installServer --mirror https://maven.minecraftforge.net
+              # Forge creates a version-specific jar, rename it for consistency
+              if [ -f "forge-$MC-$FORGE_VERSION.jar" ]; then
+                mv "forge-$MC-$FORGE_VERSION.jar" server.jar
+              fi
+              rm -f installer.jar installer.jar.log
+              ;;
+            *)
+              # Vanilla
+              MANIFEST=$(curl -s "https://launchermeta.mojang.com/mc/game/version_manifest.json")
+              VERSION_URL=$(echo "$MANIFEST" | jq -r --arg V "$MC" '.versions[] | select(.id == $V) | .url')
+              DOWNLOAD_URL=$(curl -s "$VERSION_URL" | jq -r '.downloads.server.url')
+              curl -L -o server.jar "$DOWNLOAD_URL"
+              ;;
+          esac
+          
+          # Ensure server.jar exists
+          if [ ! -f "server.jar" ]; then
+            echo "ERROR: Failed to download server jar!"
+            exit 1
+          fi
+
+      - name: Configure Properties
         working-directory: ./data
         run: |
           echo "eula=true" > eula.txt
           cat <<EOF > server.properties
-          difficulty=${{ inputs.difficulty }}
-          hardcore=${{ inputs.hardcore }}
-          level-seed=${{ inputs.seed }}
-          max-players=${{ inputs.max_players }}
-          motd=${{ inputs.motd }}
-          online-mode=${{ inputs.online_mode }}
-          server-port=25565
-          EOF
+online-mode=${{ inputs.online_mode }}
+motd=${{ inputs.motd }}
+difficulty=${{ inputs.difficulty }}
+level-seed=${{ inputs.seed }}
+server-port=${{ inputs.server_port }}
+allow-flight=true
+max-players=20
+view-distance=10
+simulation-distance=10
+enable-rcon=false
+enable-command-block=true
+max-world-size=29999984
+EOF
 
-      - name: Setup Playit.gg Tunnel
-        env:
-          PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
+      - name: Networking Setup
         run: |
+          # Install playit.gg
           curl -SsL https://playit-cloud.github.io/ppa/key.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/playit.gpg >/dev/null
-          echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/data ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list
-          sudo apt-get update && sudo apt-get install -y playit
+          echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/ubuntu ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list
+          sudo apt update && sudo apt install -y playit
           
-          echo "Starting Playit..."
-          if [ -z "$PLAYIT_SECRET" ]; then
-            playit > playit.log 2>&1 &
-            sleep 15
-            echo "--- !!! ACTION REQUIRED: CLAIM YOUR IP !!! ---"
-            grep -o "https://playit.gg/claim/[^ ]*" playit.log || cat playit.log
-          else
-            # Start with secret
-            playit --secret "$PLAYIT_SECRET" > playit.log 2>&1 &
-            sleep 15
-            echo "--- YOUR SERVER IP ADDRESS ---"
-            # This line finds the actual .playit.gg address in the logs
-            grep -oE "[a-zA-Z0-9.-]+\.playit\.gg" playit.log | head -n 1 || echo "IP not found in logs yet, check Playit.gg Dashboard"
+          # Start playit in background
+          nohup playit --secret "${{ secrets.PLAYIT_SECRET }}" > playit.log 2>&1 &
+          PLAYIT_PID=$!
+          echo "PLAYIT_PID=$PLAYIT_PID" >> $GITHUB_ENV
+          
+          # Wait for tunnel to be ready
+          echo "Waiting for playit tunnel..."
+          sleep 15
+          
+          # Try to extract URL
+          if [ -f "playit.log" ]; then
+            URL=$(grep -oE "[a-zA-Z0-9.-]+\.(playit\.gg|joinmc\.link)" playit.log | head -1)
+            if [ -n "$URL" ]; then
+              echo "Server address: $URL"
+              echo "PLAYIT_URL=$URL" >> $GITHUB_ENV
+            else
+              echo "Could not extract URL from playit.log, check playit.gg dashboard"
+            fi
           fi
-          echo "------------------------------------------"
 
-      # --- Run Server ---
-      - name: Start Minecraft Server
+      - name: Run Server
         working-directory: ./data
+        timeout-minutes: 360  # 6 hour timeout
         run: |
-          if [ "${{ inputs.mod_loader }}" = "forge" ]; then
-            chmod +x run.sh && ./run.sh nogui
+          # Create start script for Forge if needed
+          if [ "${{ inputs.mod_loader }}" = "forge" ] && [ ! -f "run.sh" ]; then
+            cat <<'EOF' > run.sh
+#!/bin/bash
+java -Xmx6G -Xms6G -jar server.jar nogui
+EOF
+            chmod +x run.sh
+          fi
+          
+          # Use 6GB as default
+          if [ -f "run.sh" ]; then
+            echo "Starting with run.sh..."
+            ./run.sh nogui
           else
-            java -Xms4G -Xmx6G -jar server.jar nogui
+            echo "Starting server.jar..."
+            java -Xmx6G -Xms6G -jar server.jar nogui
           fi
 
-      # --- Backup Logic ---
-      - name: Backup World
+      - name: Persistence & Backup
         if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -d "data/world" ]; then
-            zip -r data/world.zip data/world data/world_nether data/world_the_end
-            gh release create backup --title "World Backup" data/world.zip --target $GITHUB_SHA || gh release upload backup data/world.zip --clobber
-            rm -rf data/world.zip data/world data/world_nether data/world_the_end data/*.jar data/libraries data/logs
-            git config --global user.name "Backup"
-            git config --global user.email "actions@github.com"
-            git add data/ && git commit -m "Save configs [skip ci]" && git push || echo "No changes."
+          # Kill playit process
+          if [ -n "$PLAYIT_PID" ]; then
+            kill $PLAYIT_PID 2>/dev/null || true
+          fi
+          
+          cd data
+          
+          # Zip the world folders if they exist
+          if [ -d "world" ]; then
+            echo "Creating backup..."
+            # Include all world directories
+            zip -r ../world.zip world world_nether world_theend 2>/dev/null || zip -r ../world.zip world 2>/dev/null || echo "Zip failed"
+            
+            # Create or update release
+            if [ -f "../world.zip" ]; then
+              if gh release view backup &>/dev/null; then
+                gh release upload backup ../world.zip --clobber
+              else
+                gh release create backup ../world.zip --title "Server Backup" --notes "Latest World Backup"
+              fi
+            fi
+          fi
+          
+          # Remove large files before committing configs
+          rm -rf world world_nether world_theend *.jar libraries logs/*.log.gz
+          
+          # Go back to root and commit configs
+          cd ..
+          
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Only commit if there are changes
+          if git status --porcelain | grep -q "^[ MADRCU]"; then
+            git add data/
+            git commit -m "Update server configs and logs"
+            git push
+          else
+            echo "No changes to commit"
           fi
