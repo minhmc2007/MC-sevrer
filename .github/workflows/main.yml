@@ -5,7 +5,7 @@ on:
     inputs:
       mc_version:
         description: 'Minecraft Version'
-        default: '1.20.4'
+        default: '1.20.1'
         required: true
       mod_loader:
         description: 'Mod Loader'
@@ -15,7 +15,7 @@ on:
         - paper
         - fabric
         - forge
-        default: paper
+        default: forge
       java_distro:
         description: 'Java Distribution'
         type: choice
@@ -24,13 +24,13 @@ on:
         - graalvm
         default: stock
       java_version:
-        description: 'Java Version (Recommended: 21 for modern)'
-        default: '21'
+        description: 'Java Version (17 for 1.20.1, 21 for 1.20.5+)'
+        default: '17'
         required: true
       # Server Properties
       motd:
         description: 'Server MOTD'
-        default: 'A GitHub Actions Server'
+        default: 'A GitHub Actions Forge Server'
       difficulty:
         description: 'Difficulty'
         type: choice
@@ -41,7 +41,7 @@ on:
         type: boolean
         default: false
       online_mode:
-        description: 'Online Mode (False = Crack/Offline)'
+        description: 'Online Mode (False = Cracked/Offline)'
         type: boolean
         default: true
       seed:
@@ -74,8 +74,7 @@ jobs:
         run: |
           curl -s "https://get.sdkman.io" | bash
           source "$HOME/.sdkman/bin/sdkman-init.sh"
-          # Try to install the requested version, falling back to 21 if specific format fails
-          sdk install java ${{ inputs.java_version }}-graalce || sdk install java 21-graalce
+          sdk install java ${{ inputs.java_version }}-graalce
           echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
           echo "$HOME/.sdkman/candidates/java/current/bin" >> $GITHUB_PATH
 
@@ -96,38 +95,58 @@ jobs:
             echo "World restored."
           fi
 
-      # --- Download Server Jar ---
+      # --- Download Server Jar (Logic for all loaders) ---
       - name: Download Server JAR
         working-directory: ./data
         run: |
-          VERSION="${{ inputs.mc_version }}"
+          MC_VERSION="${{ inputs.mc_version }}"
           LOADER="${{ inputs.mod_loader }}"
           
-          echo "Downloading $LOADER for Minecraft $VERSION..."
+          echo "Downloading $LOADER for Minecraft $MC_VERSION..."
           
           if [ "$LOADER" = "paper" ]; then
-            BUILD=$(curl -s https://api.papermc.io/v2/projects/paper/versions/$VERSION/builds | jq -r '.builds[-1].build')
-            curl -o server.jar "https://api.papermc.io/v2/projects/paper/versions/$VERSION/builds/$BUILD/downloads/paper-$VERSION-$BUILD.jar"
+            BUILD=$(curl -s https://api.papermc.io/v2/projects/paper/versions/$MC_VERSION/builds | jq -r '.builds[-1].build')
+            curl -o server.jar "https://api.papermc.io/v2/projects/paper/versions/$MC_VERSION/builds/$BUILD/downloads/paper-$MC_VERSION-$BUILD.jar"
           
           elif [ "$LOADER" = "fabric" ]; then
-            curl -OJ "https://meta.fabricmc.net/v2/versions/loader/$VERSION/stable/1.0.0/server/jar"
+            curl -OJ "https://meta.fabricmc.net/v2/versions/loader/$MC_VERSION/stable/1.0.0/server/jar"
             mv fabric-server-mc*.jar server.jar
           
           elif [ "$LOADER" = "vanilla" ]; then
-            # Complex logic to get Vanilla URL via Piston Meta
-            MANIFEST_URL=$(curl -s https://launchermeta.mojang.com/mc/game/version_manifest.json | jq -r --arg V "$VERSION" '.versions[] | select(.id == $V) | .url')
+            MANIFEST_URL=$(curl -s https://launchermeta.mojang.com/mc/game/version_manifest.json | jq -r --arg V "$MC_VERSION" '.versions[] | select(.id == $V) | .url')
             DOWNLOAD_URL=$(curl -s $MANIFEST_URL | jq -r '.downloads.server.url')
-            curl -o server.jar $DOWNLOAD_URL
+            curl -o server.jar "$DOWNLOAD_URL"
             
           elif [ "$LOADER" = "forge" ]; then
-            echo "Forge auto-install is complex in Actions. Please switch to Fabric or Paper for best results."
-            exit 1
+            # Get the recommended Forge version for the selected Minecraft version
+            PROMOS=$(curl -s "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json")
+            FORGE_VERSION=$(echo "$PROMOS" | jq -r ".promos[\"$MC_VERSION-latest\"]")
+            if [ "$FORGE_VERSION" = "null" ]; then
+              FORGE_VERSION=$(echo "$PROMOS" | jq -r ".promos[\"$MC_VERSION-recommended\"]")
+            fi
+            if [ "$FORGE_VERSION" = "null" ]; then
+              echo "Error: Could not find a recommended or latest Forge version for Minecraft $MC_VERSION"
+              exit 1
+            fi
+            
+            echo "Found Forge version $FORGE_VERSION for Minecraft $MC_VERSION"
+            INSTALLER_URL="https://maven.minecraftforge.net/net/minecraftforge/forge/$MC_VERSION-$FORGE_VERSION/forge-$MC_VERSION-$FORGE_VERSION-installer.jar"
+            
+            echo "Downloading installer from $INSTALLER_URL"
+            curl -o forge-installer.jar "$INSTALLER_URL"
           fi
-          
-          chmod +x server.jar
+
+      # --- Install Forge Server (Only runs for Forge) ---
+      - name: Install Forge Server
+        if: ${{ inputs.mod_loader == 'forge' }}
+        working-directory: ./data
+        run: |
+          echo "Running the Forge installer..."
+          java -jar forge-installer.jar --installServer
+          echo "Forge installation complete."
 
       # --- Configure Server ---
-      - name: Generate server.properties
+      - name: Configure Server Properties and EULA
         working-directory: ./data
         run: |
           echo "eula=true" > eula.txt
@@ -156,55 +175,61 @@ jobs:
           curl -SsL https://playit-cloud.github.io/ppa/key.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/playit.gpg >/dev/null
           echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/data ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list
           sudo apt-get update
-          sudo apt-get install playit
+          sudo apt-get install -y playit
           
-          # Start playit in background
-          if [ "${{ secrets.PLAYIT_SECRET }}" != "" ]; then
-             playit --secret ${{ secrets.PLAYIT_SECRET }} &
-             echo "Playit started with your secret key."
-          else
-             playit &
-             echo "Playit started. CHECK THE LOGS BELOW for the claim URL to get your IP!"
-          fi
+          echo "Starting Playit.gg tunnel in the background..."
+          nohup playit &
+          sleep 5 # Give it a moment to initialize and print the address
 
       # --- Run Server ---
       - name: Start Minecraft Server
         working-directory: ./data
         run: |
-          # Give Playit a moment to start
-          sleep 10
-          
           echo "-----------------------------------------------------"
-          echo " STARTING SERVER - IT WILL RUN FOR MAX 6 HOURS "
+          echo " STARTING SERVER - IT WILL RUN FOR A MAX OF 6 HOURS "
+          echo " CHECK THE LOGS ABOVE FOR YOUR SERVER ADDRESS FROM PLAYIT.GG "
           echo "-----------------------------------------------------"
           
-          java -Xms4G -Xmx6G -jar server.jar nogui
+          if [ "${{ inputs.mod_loader }}" = "forge" ]; then
+            # Forge generates a run.sh script which we must use
+            chmod +x run.sh
+            ./run.sh nogui
+          else
+            # Other server types use a standard server.jar
+            java -Xms4G -Xmx6G -jar server.jar nogui
+          fi
 
-      # --- Backup Logic (Runs even if cancelled/stopped) ---
+      # --- Backup Logic (Runs on stop/cancel/timeout) ---
       - name: Backup World to Release
-        if: always() # Runs even if you cancel the workflow
+        if: always() # This ensures the backup runs even if the workflow is cancelled
         working-directory: ./data
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Server stopped. Starting backup..."
+          echo "Server stopped. Starting backup process..."
           
-          # 1. Zip the Heavy World Data
+          # Only proceed if a world exists
+          if [ ! -d "world" ]; then
+            echo "No world directory found to back up."
+            exit 0
+          fi
+          
+          # 1. Zip the heavy world data
+          echo "Zipping world files..."
           zip -r world.zip world world_nether world_the_end
           
           # 2. Upload World Zip to Release
-          # Create tag if not exists
-          gh release create backup --title "World Backup" --notes "Rolling backup of server world" world.zip --target $GITHUB_SHA || \
+          echo "Uploading backup to GitHub Releases..."
+          gh release create backup --title "World Backup" --notes "Automated world backup" world.zip --target $GITHUB_SHA || \
           gh release upload backup world.zip --clobber
           
-          # 3. Clean up heavy files before git commit
-          rm world.zip
-          rm -rf world world_nether world_the_end server.jar libraries versions
+          # 3. Clean up heavy files before committing the rest
+          rm -rf world.zip world world_nether world_the_end *.jar libraries versions logs cache config
           
-          # 4. Commit smaller configs (whitelist, bans, logs) to repo
+          # 4. Commit smaller configs (whitelist, ops, etc.) to the repo
           cd ..
-          git config --global user.name "GitHub Actions Server"
+          git config --global user.name "GitHub Actions Backup"
           git config --global user.email "actions@github.com"
           git add data/
-          git commit -m "Save server configs and logs [skip ci]" || echo "No changes to commit"
+          git commit -m "Save non-world server data [skip ci]" || echo "No new config changes to commit."
           git push
