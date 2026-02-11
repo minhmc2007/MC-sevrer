@@ -94,9 +94,9 @@ jobs:
             rm world.zip
             echo "World restored."
           fi
-
-      # --- Download Server Jar (Logic for all loaders) ---
-      - name: Download Server JAR
+        
+      # --- Download Server Jar ---
+      - name: Download Server Software
         working-directory: ./data
         run: |
           MC_VERSION="${{ inputs.mc_version }}"
@@ -118,12 +118,8 @@ jobs:
             curl -o server.jar "$DOWNLOAD_URL"
             
           elif [ "$LOADER" = "forge" ]; then
-            # Get the recommended Forge version for the selected Minecraft version
             PROMOS=$(curl -s "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json")
-            FORGE_VERSION=$(echo "$PROMOS" | jq -r ".promos[\"$MC_VERSION-latest\"]")
-            if [ "$FORGE_VERSION" = "null" ]; then
-              FORGE_VERSION=$(echo "$PROMOS" | jq -r ".promos[\"$MC_VERSION-recommended\"]")
-            fi
+            FORGE_VERSION=$(echo "$PROMOS" | jq -r ".promos[\"$MC_VERSION-latest\"] // .promos[\"$MC_VERSION-recommended\"]")
             if [ "$FORGE_VERSION" = "null" ]; then
               echo "Error: Could not find a recommended or latest Forge version for Minecraft $MC_VERSION"
               exit 1
@@ -136,7 +132,7 @@ jobs:
             curl -o forge-installer.jar "$INSTALLER_URL"
           fi
 
-      # --- Install Forge Server (Only runs for Forge) ---
+      # --- Install Forge Server ---
       - name: Install Forge Server
         if: ${{ inputs.mod_loader == 'forge' }}
         working-directory: ./data
@@ -157,7 +153,7 @@ jobs:
           allow-flight=true
           difficulty=${{ inputs.difficulty }}
           enable-rcon=false
-          gamemode=survival
+          gamode=survival
           hardcore=${{ inputs.hardcore }}
           level-seed=${{ inputs.seed }}
           max-players=${{ inputs.max_players }}
@@ -169,7 +165,7 @@ jobs:
           view-distance=10
           EOF
 
-      # --- Networking (REQUIRED to join) ---
+      # --- Networking ---
       - name: Setup Playit.gg Tunnel
         run: |
           curl -SsL https://playit-cloud.github.io/ppa/key.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/playit.gpg >/dev/null
@@ -179,7 +175,7 @@ jobs:
           
           echo "Starting Playit.gg tunnel in the background..."
           nohup playit &
-          sleep 5 # Give it a moment to initialize and print the address
+          sleep 8 # Give it a moment to initialize and print the address
 
       # --- Run Server ---
       - name: Start Minecraft Server
@@ -191,43 +187,40 @@ jobs:
           echo "-----------------------------------------------------"
           
           if [ "${{ inputs.mod_loader }}" = "forge" ]; then
-            # Forge generates a run.sh script which we must use
             chmod +x run.sh
             ./run.sh nogui
           else
-            # Other server types use a standard server.jar
             java -Xms4G -Xmx6G -jar server.jar nogui
           fi
 
-      # --- Backup Logic (Runs on stop/cancel/timeout) ---
+      # --- Backup Logic (FIXED) ---
       - name: Backup World to Release
-        if: always() # This ensures the backup runs even if the workflow is cancelled
-        working-directory: ./data
+        if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Server stopped. Starting backup process..."
           
-          # Only proceed if a world exists
-          if [ ! -d "world" ]; then
-            echo "No world directory found to back up."
+          # FIX: Check if the world directory exists before proceeding.
+          # This prevents errors on first run or if the server failed before world generation.
+          if [ ! -d "data/world" ]; then
+            echo "No world directory found at 'data/world'. Nothing to back up."
             exit 0
           fi
           
-          # 1. Zip the heavy world data
-          echo "Zipping world files..."
-          zip -r world.zip world world_nether world_the_end
+          echo "Zipping world files from the 'data' directory..."
+          # FIX: Use explicit paths from the repository root instead of relying on working-directory.
+          zip -r data/world.zip data/world data/world_nether data/world_the_end
           
-          # 2. Upload World Zip to Release
           echo "Uploading backup to GitHub Releases..."
-          gh release create backup --title "World Backup" --notes "Automated world backup" world.zip --target $GITHUB_SHA || \
-          gh release upload backup world.zip --clobber
+          gh release create backup --title "World Backup" --notes "Automated world backup" data/world.zip --target $GITHUB_SHA || \
+          gh release upload backup data/world.zip --clobber
           
-          # 3. Clean up heavy files before committing the rest
-          rm -rf world.zip world world_nether world_the_end *.jar libraries versions logs cache config
+          echo "Cleaning up repository for commit..."
+          # FIX: Use explicit paths to remove heavy files.
+          rm -rf data/world.zip data/world data/world_nether data/world_the_end data/*.jar data/libraries data/versions data/logs data/cache data/config
           
-          # 4. Commit smaller configs (whitelist, ops, etc.) to the repo
-          cd ..
+          # Commit any remaining small config files
           git config --global user.name "GitHub Actions Backup"
           git config --global user.email "actions@github.com"
           git add data/
